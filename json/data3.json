@@ -1,0 +1,10 @@
+{
+    "name": "Charlie",
+    "age": 35,
+    "email": "charlie@example.com",
+    "city": "Izmir",
+    "preferences": {
+        "language": "French",
+        "theme": "blue"
+    }
+}

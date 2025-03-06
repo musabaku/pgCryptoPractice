@@ -1,0 +1,146 @@
+-- Enable pgcrypto extension
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+SET app.encryption_key = 'S3cr3tK3y!2025';
+
+--------------------------------------------------
+-- 1. Centralized Key and Encryption Functions
+--------------------------------------------------
+
+-- Function to retrieve the encryption key
+CREATE OR REPLACE FUNCTION get_encryption_key() RETURNS text AS $$
+BEGIN
+  RETURN current_setting('app.encryption_key');
+END;
+$$ LANGUAGE plpgsql STRICT;
+
+-- Function to encrypt JSON data (using jsonb)
+CREATE OR REPLACE FUNCTION encrypt_json(p_json jsonb) RETURNS bytea AS $$
+BEGIN
+  RETURN pgp_sym_encrypt(p_json::text, get_encryption_key());
+END;
+$$ LANGUAGE plpgsql STRICT;
+
+-- Function to decrypt JSON data
+CREATE OR REPLACE FUNCTION decrypt_json(p_enc bytea) RETURNS jsonb AS $$
+DECLARE
+  decrypted_text text;
+BEGIN
+  decrypted_text := pgp_sym_decrypt(p_enc, get_encryption_key());
+  RETURN decrypted_text::jsonb;
+END;
+$$ LANGUAGE plpgsql STRICT;
+
+-- Function to encrypt audio data
+CREATE OR REPLACE FUNCTION encrypt_audio(p_audio bytea) RETURNS bytea AS $$
+BEGIN
+  RETURN pgp_sym_encrypt_bytea(p_audio, get_encryption_key());
+END;
+$$ LANGUAGE plpgsql STRICT;
+
+-- Function to decrypt audio data
+CREATE OR REPLACE FUNCTION decrypt_audio(p_enc bytea) RETURNS bytea AS $$
+BEGIN
+  RETURN pgp_sym_decrypt_bytea(p_enc, get_encryption_key());
+END;
+$$ LANGUAGE plpgsql STRICT;
+
+--------------------------------------------------
+-- 2. Table Definitions with Audit & Metadata
+--------------------------------------------------
+
+-- Table for storing encrypted JSON data
+CREATE TABLE IF NOT EXISTS encrypted_json_data (
+  id SERIAL PRIMARY KEY,
+  data_json jsonb,       -- Original JSON data stored as jsonb for efficient querying
+  enc_data_json BYTEA,   -- Encrypted JSON data
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  key_version INTEGER DEFAULT 1  -- For tracking encryption key version
+);
+
+-- Table for storing encrypted audio files
+CREATE TABLE IF NOT EXISTS encrypted_audio_files (
+  id SERIAL PRIMARY KEY,
+  filename TEXT,
+  audio_data BYTEA,      -- Original audio file content (if needed)
+  enc_audio_data BYTEA,  -- Encrypted audio file content
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  key_version INTEGER DEFAULT 1  -- For tracking encryption key version
+);
+
+--------------------------------------------------
+-- 3. Inserting Sample Data
+--------------------------------------------------
+
+-- Insert sample JSON records using our encryption function
+INSERT INTO encrypted_json_data (data_json, enc_data_json)
+VALUES 
+  ('{"name": "Alice", "age": 30}'::jsonb, encrypt_json('{"name": "Alice", "age": 30}'::jsonb)),
+  ('{"name": "Bob", "age": 25}'::jsonb, encrypt_json('{"name": "Bob", "age": 25}'::jsonb)),
+  ('{"name": "Charlie", "age": 35}'::jsonb, encrypt_json('{"name": "Charlie", "age": 35}'::jsonb));
+
+-- Import audio files from the Desktop audio folder.
+-- Ensure the PostgreSQL server has access to these paths.
+INSERT INTO encrypted_audio_files (filename, audio_data, enc_audio_data)
+VALUES 
+  (
+    'audio1.mp3',
+    pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio1.mp3'),
+    encrypt_audio(pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio1.mp3'))
+  ),
+  (
+    'audio2.mp3',
+    pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio2.mp3'),
+    encrypt_audio(pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio2.mp3'))
+  ),
+  (
+    'audio3.mp3',
+    pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio3.mp3'),
+    encrypt_audio(pg_read_binary_file('C:\\Users\\musab\\Desktop\\audio\\audio3.mp3'))
+  );
+
+--------------------------------------------------
+-- 4. Example Queries for Decryption
+--------------------------------------------------
+
+-- Decrypt JSON data
+SELECT 
+  id,
+  data_json,
+  decrypt_json(enc_data_json) AS decrypted_json,
+  created_at
+FROM encrypted_json_data;
+
+-- Decrypt audio file data
+SELECT 
+  id,
+  filename,
+  decrypt_audio(enc_audio_data) AS decrypted_audio_data,
+  created_at
+FROM encrypted_audio_files;
+-------------
+SELECT 
+  id,
+  'JSON' AS data_type, 
+  NULL AS filename,             -- Placeholder for filename (not applicable for JSON data)
+  data_json::text AS original_data, -- Original JSON data cast to text
+  decrypt_json(enc_data_json)::text AS decrypted_data, -- Decrypted JSON data as text
+  NULL AS audio_data,           -- Placeholder for audio data (not applicable for JSON data)
+  enc_data_json AS enc_data,    -- Encrypted JSON data as is
+  created_at,
+  key_version
+FROM encrypted_json_data
+
+UNION ALL
+
+SELECT 
+  id,
+  'AUDIO' AS data_type, 
+  filename,                     -- Filename for audio files
+  NULL AS original_data,        -- Placeholder for JSON data (not applicable for audio data)
+  encode(decrypt_audio(enc_audio_data), 'base64') AS decrypted_data, -- Decrypted audio data as Base64-encoded text
+  audio_data,                   -- Original audio data
+  enc_audio_data AS enc_data,   -- Encrypted audio data
+  created_at,
+  key_version
+FROM encrypted_audio_files;
